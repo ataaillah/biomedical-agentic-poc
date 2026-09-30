@@ -1,0 +1,9 @@
+{
+  "reference": "The Cancer Genome Atlas Research Network. Genomic and Epigenomic Landscapes of Adult De Novo Acute Myeloid Leukemia. N Engl J Med. 2013;368:2059–2074. DOI: 10.1056/NEJMoa1301689. Tableau 1 (suite), p. 2063.",
+  "pdf_page": 5,
+  "printed_page": 2063,
+  "quote": "NPM1 54/200 (27)",
+  "pdf_sha256": "0efea6b7d069162b305615bfd648e5cf06de4f22805ab714eff1fe231f848b17",
+  "version_note": "Le PDF indique une mise à jour le 13 juin 2013 sur sa première page.",
+  "extraction": "pdftotext -f 5 -l 5 -layout references/NEJMoa1301689.pdf - ; contrôle visuel de la page effectué."
+}

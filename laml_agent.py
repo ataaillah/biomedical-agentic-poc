@@ -155,6 +155,7 @@ def progress(state):
     last = state['calls'][-1] if state['calls'] else None
     return {'taches_realisees': completed,
             'resultats_disponibles': state['observations'],
+            'preuves_ou_controles_manquants': missing,
             'dernier_choix': ({'outil': last['outil'], 'arguments': last['arguments'],
                                'resultat': compact(last['result']), 'reutilise': last.get('reused', False)} if last else None),
             'rappel': ('Appel identique déjà réussi, résultat réutilisé. Choisis une autre action utile ; '

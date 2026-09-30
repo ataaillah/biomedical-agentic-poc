@@ -1,6 +1,6 @@
 # Biomedical Agentic POC
 
-> **Local, reproducible and auditable agentic workflow for biomedical evidence verification**
+> **Local and auditable agentic workflow for biomedical evidence verification**
 
 This proof of concept explores how a **small local language model can orchestrate deterministic biomedical tools** while keeping scientific computation, evidence retrieval and verification outside the LLM.
 
@@ -54,26 +54,20 @@ The deterministic analysis independently obtains:
 
 ```mermaid
 flowchart TD
-
-    Q[User question] --> LLM[Local LLM<br/>Qwen3 via Ollama]
-
-    LLM --> LG[LangGraph<br/>orchestration]
-
-    LG --> EC[examiner_cohorte]
-    LG --> CN[compter_npm1]
-    LG --> PDF[preuve_pdf]
-
-    EC --> LG
-    CN --> LG
-    PDF --> LG
-
-    LG --> CMP[comparer]
-
-    CMP --> V{Deterministic<br/>verification}
-
+    Q[User question] --> CLI[laml_poc.py<br/>CLI / entry point]
+    CLI -->|deterministic mode| DET[Deterministic workflow]
+    CLI -->|agentic mode| AG[laml_agent.py]
+    AG --> LLM[Qwen3 via Ollama]
+    LLM --> LG[LangGraph orchestration]
+    LG --> T[Deterministic biomedical tools]
+    T --> LG
+    DET --> V[Deterministic verification]
+    LG --> V
     V -->|match| OK[VERIFIE]
     V -->|mismatch / missing evidence| NOK[NON_VERIFIE]
 ```
+
+`laml_poc.py` is the command-line entry point. It can run the deterministic baseline directly or delegate agentic orchestration to `laml_agent.py`.
 
 The LLM does **not** calculate the biomedical result.
 
@@ -297,7 +291,7 @@ with:
 27%
 ```
 
-Recorded execution metrics:
+Example metrics from one recorded execution:
 
 ```text
 Runtime:             357.127 s
@@ -426,21 +420,14 @@ The biomedical source files are not distributed in this repository and must be p
 Example invocation:
 
 ```bash
-python laml_poc.py \
-"Dans la cohorte TCGA-LAML de l’article NEJM 2013, combien de patients présentent une mutation NPM1 et quelle est la fréquence ?"
+# Deterministic baseline
+python laml_poc.py --mode deterministe \
+  "Quel pourcentage de patients NPM1 mutés dans TCGA-LAML ?"
+
+# Agentic orchestration with local Qwen3
+python laml_poc.py --mode agentique --model qwen3:1.7b \
+  "Quel pourcentage de patients NPM1 mutés dans TCGA-LAML ?"
 ```
-
----
-
-## Tests
-
-The repository includes tests for the deterministic workflow and agentic components:
-
-```bash
-pytest
-```
-
-The scientific tools can therefore be tested independently from the behaviour of the local language model.
 
 ---
 
@@ -520,7 +507,7 @@ A local LLM can act as a decision layer while deterministic tools retain respons
 
 The resulting workflow is designed to remain:
 
-**local · inspectable · reproducible · provenance-aware · scientifically auditable**
+**local · inspectable · provenance-aware · scientifically auditable**
 
 ---
 

@@ -1,4 +1,4 @@
-"""POC local : quatre rôles déterministes orchestrés par LangGraph."""
+"""POC local de vérification biomédicale avec orchestration déterministe ou agentique via LangGraph."""
 import argparse
 import csv
 import hashlib

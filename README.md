@@ -421,11 +421,11 @@ Example invocation:
 
 ```bash
 # Deterministic baseline
-python laml_poc.py --mode deterministe \
+.venv/bin/python laml_poc.py --mode deterministe \
   "Quel pourcentage de patients NPM1 mutés dans TCGA-LAML ?"
 
 # Agentic orchestration with local Qwen3
-python laml_poc.py --mode agentique --model qwen3:1.7b \
+.venv/bin/python laml_poc.py --mode agentique --model qwen3:1.7b \
   "Quel pourcentage de patients NPM1 mutés dans TCGA-LAML ?"
 ```
 

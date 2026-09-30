@@ -1,134 +1,558 @@
-# Démonstration locale TCGA-LAML / NPM1
+# Biomedical Agentic POC
 
-Le POC recalcule **54 patients sur 200, soit 27 %**, puis confronte ce résultat à une preuve extraite du PDF local : tableau 1 (suite), p. 2063, cinquième page du PDF. Les fichiers originaux et le rapport de faisabilité restent inchangés.
+> **Local, reproducible and auditable agentic workflow for biomedical evidence verification**
 
-## Relancer
+This proof of concept explores how a **small local language model can orchestrate deterministic biomedical tools** while keeping scientific computation, evidence retrieval and verification outside the LLM.
 
-Depuis ce répertoire, environnement `.venv` déjà installé :
+The current demonstration uses the TCGA acute myeloid leukemia cohort (TCGA-LAML) and independently verifies the published frequency of **NPM1-mutated patients: 54/200 (27%)**.
 
-```bash
-.venv/bin/python laml_poc.py "Dans la cohorte TCGA-LAML de l’article NEJM 2013, combien de patients présentent une mutation NPM1 et quelle est la fréquence ?"
+The objective is not to build a biomedical chatbot, but to explore an architecture in which an LLM participates in scientific reasoning **without being trusted to generate the scientific result itself**.
+
+---
+
+## Why this project?
+
+LLMs can be useful for planning and tool selection, but biomedical analyses require stronger guarantees around reproducibility, provenance and evidence.
+
+This POC therefore separates four responsibilities:
+
+- **LLM** — decides which action to perform;
+- **deterministic Python tools** — perform scientific calculations;
+- **source documents** — provide independent evidence;
+- **deterministic verification** — compares calculated and published results.
+
+A correct-looking LLM answer is not considered sufficient evidence.
+
+---
+
+## Scientific use case
+
+The demonstration uses data associated with:
+
+**The Cancer Genome Atlas Research Network.**  
+*Genomic and Epigenomic Landscapes of Adult De Novo Acute Myeloid Leukemia.*  
+New England Journal of Medicine. 2013;368:2059–2074.  
+DOI: `10.1056/NEJMoa1301689`
+
+The publication reports:
+
+> **NPM1 — 54/200 (27%)**
+
+The workflow asks:
+
+> In the TCGA-LAML cohort reported in the 2013 NEJM paper, how many patients present an NPM1 mutation and what is the corresponding frequency?
+
+The deterministic analysis independently obtains:
+
+```text
+54 / 200 = 27%
 ```
 
-Sans argument, la même question est utilisée. Le périmètre est volontairement fermé : seule cette formulation est acceptée, avec tolérance pour casse, espaces et apostrophe typographique. Une autre question reçoit `NON_VERIFIE`, sans résultat hors sujet.
+---
 
-```bash
-# Désaccord volontaire : documentaire synthétique 55/200, calcul inchangé.
-.venv/bin/python laml_poc.py --scenario desaccord
-# Source manquante : demande le PDF, sans prétendre avoir vérifié le résultat.
-.venv/bin/python laml_poc.py --pdf references/absent.pdf
-# Audit complet : identifiants, événements et lignes TSV, contrôles, empreintes.
-.venv/bin/python laml_poc.py --json
-# Tests
-.venv/bin/python -m unittest discover -s tests -v
-```
-
-Code de sortie 0 : vérifié ; 2 : désaccord, source indisponible ou question hors périmètre. Le scénario de désaccord retourne donc volontairement 2. L’injection est réalisée en mémoire, explicitement marquée synthétique ; ni l’extrait authentique ni le PDF ne sont altérés.
-
-## Installation sur une autre machine
-
-Python 3.10 ou supérieur, module `venv`/pip et outil système `pdftotext` (paquet Debian/Ubuntu `poppler-utils`) sont nécessaires. Le mode déterministe ne nécessite aucun modèle ; le mode agentique nécessite Ollama et le modèle local.
-
-```bash
-python3 -m venv .venv
-.venv/bin/python -m pip install -r requirements.lock.txt
-```
-
-`requirements.txt` exprime la dépendance directe ; le fichier lock fixe les versions effectivement exécutées (environnement Python 3.10). L’installation initiale demande un accès au registre de paquets. L’exécution ne demande aucune connexion ni clé API. LangSmith est une dépendance transitive de LangGraph, mais ses traces sont explicitement désactivées, aucun client cloud n’est créé. Le test nominal interdit les connexions socket Python pendant l’exécution du graphe.
-
-## Orchestration
+## Architecture
 
 ```mermaid
-flowchart LR
-    P[planificateur] --> A[analyste]
-    A --> D[documentaliste]
-    D --> V[vérificateur]
+flowchart TD
+
+    Q[User question] --> LLM[Local LLM<br/>Qwen3 via Ollama]
+
+    LLM --> LG[LangGraph<br/>orchestration]
+
+    LG --> EC[examiner_cohorte]
+    LG --> CN[compter_npm1]
+    LG --> PDF[preuve_pdf]
+
+    EC --> LG
+    CN --> LG
+    PDF --> LG
+
+    LG --> CMP[comparer]
+
+    CMP --> V{Deterministic<br/>verification}
+
+    V -->|match| OK[VERIFIE]
+    V -->|mismatch / missing evidence| NOK[NON_VERIFIE]
 ```
 
-Ce sont quatre vrais nœuds d’un `StateGraph` LangGraph compilé et exécuté localement. Le planificateur applique une règle de périmètre et produit le plan ; l’analyste appelle `calculate`; le documentaliste contrôle la preuve locale contre le PDF ; le vérificateur compare les valeurs et rassemble les alertes. L’état et la trace de passage sont disponibles en JSON.
+The LLM does **not** calculate the biomedical result.
 
-Ce parcours reste le **mode déterministe**, sans décisions LLM. Le mode agentique distinct est décrit ci-dessous. API utilisée : [StateGraph](https://reference.langchain.com/python/langgraph/graph/state/StateGraph).
+Its role is restricted to selecting one action at a time from a predefined tool set.
 
-## Calcul et preuve
+---
 
-- `calculate` dans `laml_poc.py` est appelable indépendamment du graphe. Les lignes patient XLSX sont sélectionnées par leur identifiant en B. AQ n’est décodée qu’ensuite : la valeur de total AQ202 n’est jamais utilisée ni décodée. Un test remplace cette cellule par une référence invalide et confirme l’indépendance du calcul.
-- Cohorte : les identifiants de la table 01, normalisés avec `TCGA-AB-`, doivent être exactement ceux du freeze et compter 200 patients. Toute divergence est signalée, jamais corrigée silencieusement.
-- Table 06 : `gene_name=NPM1`, `tier=tier1`, conséquences observées `frame_shift_ins` ou `missense`, déduplication par `TCGA_id`. Les autres annotations NPM1 éventuelles provoquent une alerte de révision des filtres. Aucun seuil VAF/ARN ni filtre WGS n’est ajouté.
-- 55 événements correspondent à 54 patients : deux insertions pour TCGA-AB-2802 ; le faux-sens de TCGA-AB-2915 est inclus. La liste obtenue est comparée à la liste NPM1 indépendante de la table 01, pas seulement à son effectif.
-- La table 06 représente 197 patients. Les trois absents restent dans le dénominateur de 200 fourni par la table 01 ; leur absence ne prouve pas un génotype sauvage.
-- `references/npm1_table1.json` conserve le court extrait, la référence, les deux paginations et l’empreinte du PDF. À chaque exécution, `pdftotext` vérifie l’extrait sur la page annoncée et l’empreinte est comparée. Un PDF absent ou différent empêche le statut vérifié. L’extrait a aussi été contrôlé visuellement lors de la construction.
-- Chaque réponse fournit les chemins et SHA-256 des trois données, du PDF et de la preuve JSON. Les limites et discordances sont présentes en sortie texte ; l’audit détaillé est en JSON.
+## Agentic workflow
 
-## Limites et validation
+The local model can select among actions including:
 
-Ce POC reproduit un résultat à partir des annotations des auteurs, sans réanalyse des lectures ni validation clinique de variants. La version exacte du XLSX reste non certifiée (voir `notes/laml_feasibility.md`). Le PDF local indique lui-même une mise à jour du 13 juin 2013 ; cette mention ne résout pas la provenance du XLSX.
+```text
+examiner_cohorte
+compter_npm1
+preuve_pdf
+comparer
+terminer
+hors_perimetre
+```
 
-Exécution observée : statut `VERIFIE`, 54/200, 27 %, environ 66 Mio de mémoire maximale et 7 secondes (mesurés avec `/usr/bin/time`, pendant l’exécution simultanée des contrôles). Cela laisse une marge importante sur 4 Go, sans constituer une garantie sur toute machine. Le graphe lit le TSV et les lignes XLSX en flux.
+Model responses are constrained by a JSON schema.
 
-Les tests couvrent le résultat réel et la déduplication, le désaccord synthétique, le PDF absent, l’indépendance à la ligne de total et le refus des questions hors périmètre.
+A typical successful trajectory is:
 
-## Mode agentique local
+```text
+compter_npm1
+      ↓
+preuve_pdf
+      ↓
+comparer
+      ↓
+terminer
+```
 
-Installation Debian/Ubuntu (accès réseau nécessaire uniquement pour installer/télécharger) :
+LangGraph maintains the state and implements the loop:
+
+```text
+decision → tool → decision → tool → ... → final
+```
+
+The model therefore controls **which available operation is executed next**, while the operations themselves remain deterministic.
+
+---
+
+## Separation of reasoning and computation
+
+A central design choice is to keep scientific computation outside the LLM.
+
+```text
+              LLM
+               │
+         decides what to do
+               │
+               ▼
+       deterministic tool
+               │
+      computes scientific result
+               │
+               ▼
+        independent evidence
+               │
+               ▼
+      deterministic comparison
+```
+
+This limits the consequences of hallucinated biomedical values.
+
+The LLM can decide to invoke `compter_npm1`, but it cannot decide that the result is `54/200`.
+
+That value must come from the underlying data-processing tool.
+
+---
+
+## Scientific result
+
+The deterministic analysis obtains:
+
+```text
+NPM1 mutation records:          55
+Unique NPM1-mutated patients:   54
+Cohort denominator:            200
+
+Frequency:                      27%
+```
+
+The distinction between mutation records and patients is intentional:
+
+```text
+55 NPM1 mutation records
+          ↓
+patient deduplication
+          ↓
+54 NPM1-mutated patients
+```
+
+Three cohort patients are absent from Supplemental Table 06:
+
+```text
+TCGA-AB-2815
+TCGA-AB-2856
+TCGA-AB-2944
+```
+
+They remain in the cohort denominator.
+
+Importantly, **absence from Supplemental Table 06 is not interpreted as demonstrated wild-type status**.
+
+---
+
+## Independent documentary verification
+
+The publication evidence is handled independently from the calculation.
+
+The corresponding published result is:
+
+```text
+NPM1 54/200 (27)
+```
+
+Location:
+
+```text
+Table 1, continued
+PDF page: 5
+Printed page: 2063
+```
+
+The verifier therefore compares:
+
+```text
+DATA                         PUBLICATION
+
+54 / 200                     54 / 200
+   │                            │
+   └──────── 27% = 27% ─────────┘
+                │
+                ▼
+             VERIFIE
+```
+
+Verification is deterministic.
+
+The LLM cannot declare a result verified by itself.
+
+---
+
+## Provenance
+
+The workflow computes SHA-256 hashes for the local scientific inputs used during execution.
+
+Example from the current analysis:
+
+```text
+SuppTable01.xlsx
+c7273ff8267e4fe0e463afae84e0e3178acf9549cbdc0c955fc1e7c536aa5009
+
+stdFreezeList.tsv
+88204cb52a9be07c6af9ebdd20cdb7aa1b0307757d4f19d6154b046165764685
+
+SupplementalTable06.tsv
+240517ded00a43a434056fa616dd16a5c433ef235bfdadf0a4251efc04a14c4a
+
+NEJMoa1301689.pdf
+0efea6b7d069162b305615bfd648e5cf06de4f22805ab714eff1fe231f848b17
+```
+
+The original biomedical source files and publication PDF are intentionally not distributed in this repository.
+
+---
+
+## Agentic ablation experiment
+
+An exploratory ablation experiment was performed to distinguish **LLM tool selection** from Python-generated routing.
+
+### Guided configuration
+
+In the initial configuration, the model received information about:
+
+- completed tasks;
+- available results;
+- missing evidence;
+- explicitly suggested useful tools;
+- the overall workflow objective.
+
+This makes tool selection strongly guided.
+
+### Reduced-guidance configuration
+
+The explicit list of suggested next tools (`outils_encore_utiles`) was removed.
+
+The model therefore had to associate the current workflow state with the appropriate available action.
+
+Using:
+
+```text
+Qwen3 1.7B
+```
+
+the observed trajectory was:
+
+```text
+compter_npm1
+      ↓
+preuve_pdf
+      ↓
+comparer
+      ↓
+terminer
+```
+
+Final status:
+
+```text
+VERIFIE
+```
+
+with:
+
+```text
+54 / 200 patients
+27%
+```
+
+Recorded execution metrics:
+
+```text
+Runtime:             357.127 s
+Python max RSS:      ~62 MiB
+Model:               qwen3:1.7b
+Output protocol:     JSON schema
+Simulation:          false
+```
+
+This experiment shows that **explicit Python-generated next-tool recommendations were not required for this successful run**.
+
+It does **not** demonstrate unconstrained autonomous scientific planning.
+
+The system prompt still defines the overall objective and the model operates inside a restricted action space.
+
+---
+
+## Small-model experiment
+
+A smaller:
+
+```text
+Qwen3 0.6B
+```
+
+model was also tested under the more strongly guided configuration.
+
+It did not successfully complete the workflow under the tested conditions.
+
+This negative result is intentionally retained.
+
+It suggests that reducing model capacity affected workflow orchestration under the current:
+
+- prompt;
+- JSON structured-output constraints;
+- context configuration;
+- local hardware environment.
+
+This experiment is exploratory and does **not** establish that Qwen3 0.6B is intrinsically incapable of performing the task.
+
+---
+
+## Experimental provenance
+
+The initial model experiments were performed during development **before the project was placed under Git version control**.
+
+They are therefore documented retrospectively from retained outputs and development diagnostics.
+
+No historical Git provenance is claimed for these initial runs.
+
+The public repository establishes a version-controlled baseline for subsequent experiments.
+
+Future experiments can associate:
+
+```text
+Git commit
+    +
+model and configuration
+    +
+prompt configuration
+    +
+LLM decisions
+    +
+tool outputs
+    +
+scientific input hashes
+    +
+final verdict
+    +
+runtime metrics
+```
+
+with each experimental run.
+
+---
+
+## Reliability principles
+
+The POC implements several safeguards:
+
+- local LLM inference;
+- restricted tool vocabulary;
+- JSON-schema-constrained model output;
+- deterministic scientific calculations;
+- no model-generated biomedical values used as evidence;
+- independent documentary verification;
+- explicit `VERIFIE / NON_VERIFIE` status;
+- maximum number of agentic decisions;
+- repeated-action detection;
+- SHA-256 input provenance;
+- diagnostic logging of model exchanges.
+
+The architecture deliberately separates:
+
+```text
+decision
+   ≠
+scientific computation
+   ≠
+documentary evidence
+   ≠
+verification
+```
+
+---
+
+## Running the POC
+
+### Requirements
+
+- Python 3
+- Ollama
+- a compatible local Qwen3 model
+
+Install Python dependencies:
 
 ```bash
-sudo apt-get update
-sudo apt-get install -y python3-venv poppler-utils curl
 python3 -m venv .venv
-.venv/bin/python -m pip install -r requirements.lock.txt
-curl -fsSL https://ollama.com/install.sh | sh
-# Si le service n’est pas déjà lancé, dans un terminal dédié :
-OLLAMA_NO_CLOUD=1 OLLAMA_HOST=127.0.0.1:11434 OLLAMA_NUM_PARALLEL=1 OLLAMA_MAX_LOADED_MODELS=1 ollama serve
-# Dans un autre terminal :
-ollama pull qwen3:0.6b
-ollama list
-.venv/bin/python laml_poc.py --mode deterministe
-.venv/bin/python laml_poc.py --mode agentique "Quel pourcentage de patients NPM1 mutés dans TCGA-LAML ?"
-.venv/bin/python laml_poc.py --mode agentique --model qwen3:0.6b --json
-.venv/bin/python laml_poc.py --mode agentique --pdf references/absent.pdf
-.venv/bin/python laml_poc.py --mode agentique --scenario desaccord
-.venv/bin/python -m unittest discover -s tests -v
-.venv/bin/python scripts/essais_ollama.py > essais_ollama.jsonl
+source .venv/bin/activate
+
+pip install -r requirements.txt
 ```
 
-`OLLAMA_MODEL` configure aussi le nom (défaut `qwen3:0.6b`). Le client appelle exclusivement `http://localhost:11434/api/chat`, ignore les proxys et refuse les noms de route cloud. Désactiver aussi le cloud côté serveur avec `OLLAMA_NO_CLOUD=1`. Aucun SDK cloud, client de télémétrie, MCP ni base vectorielle n’est ajouté. LangSmith reste désactivé.
+The biomedical source files are not distributed in this repository and must be placed in the expected local directories before running the complete scientific workflow.
 
-La documentation officielle consultée le 29 septembre 2026 décrit les [appels d’outils natifs](https://docs.ollama.com/capabilities/tool-calling) via `tools` et `tool_calls`, et les [sorties structurées](https://docs.ollama.com/capabilities/structured-outputs) via un schéma dans `format`, avec validation côté application. Ici, la sélection JSON est utilisée directement pour limiter le contexte et uniformiser la validation ; le protocole natif n’a pas été testé sur ce modèle. Aucune garantie de qualité de planification du petit modèle n’est supposée.
-
-Le graphe alterne décision du LLM et exécution d’un outil. Il n’impose aucun ordre d’outils. Le LLM peut examiner la cohorte, compter, consulter la preuve, comparer, terminer ou refuser. Noms, clés et arguments sont validés : seuls les outils listés et les arguments vides sont acceptés. Les chemins et filtres sont fixés par Python. Aucun code généré ni shell arbitraire n’est exécuté. L’appel contrôlé existant à `pdftotext` est conservé.
-
-Le contexte contient la question, les descriptions et les observations compactes, jamais le rapport de faisabilité ni une réponse préremplie. Les listes de patients et événements, filtres, chemins et empreintes restent dans l’audit JSON, hors contexte du LLM. Chaque décision reçoit les tâches réalisées, résultats compacts, preuves ou contrôles manquants, outils encore utiles et le dernier choix avec son résultat. Les appels sont séquentiels, `num_ctx=2048`, `num_predict=128`, `think=false`, température zéro et déchargement du modèle après chaque décision (`keep_alive=0`). Ce dernier choix économise la mémoire entre décisions mais augmente la durée. Six décisions maximum, y compris terminer/refuser. Une sortie invalide ou une indisponibilité arrête la boucle explicitement. Aucun parcours déterministe de remplacement n’est lancé.
-
-Seul l’outil Python de comparaison peut attribuer `VERIFIE`. Une comparaison absente, une preuve manquante, un désaccord, une erreur ou la limite de boucle donnent `NON_VERIFIE`. La réponse finale est rendue par Python à partir des outils, avec appels, arguments, provenance, alertes et mesures. La mémoire affichée est le maximum RSS du processus Python uniquement, **pas la mémoire du serveur Ollama**.
-
-## Validation de cette évolution
-
-L’erreur `Calcul impossible : 'raw'` a été reproduite dans le code : le champ `raw` manquait au schéma `State`, et LangGraph l’éliminait. Champ restauré, mode déterministe relancé avec résultat vérifié et cinq tests existants réussis avant intégration du modèle.
-
-Les tests agentiques sont **simulés** : un contrôleur scripté choisit les outils. Ils couvrent trois formulations françaises, un ordre différent, le refus hors périmètre, le PDF absent, un désaccord documentaire synthétique, les noms/arguments invalides, l’arrêt prématuré et la limite. Ils valident l’orchestration et les contrôles, pas la compréhension française de qwen3.
-
-Lors de la première intégration, les essais réels ont été tentés : aucun binaire Ollama détecté et connexion à localhost:11434 refusée, y compris hors bac à sable. Les six cas du script d’essais signalent donc l’indisponibilité ; aucune inférence réelle ni mesure mémoire du modèle n’a été obtenue. Installer et lancer Ollama avec les commandes ci-dessus puis relancer ce script permet de conserver les traces et les échecs du modèle sans remplacement simulé.
-
-## Correction des répétitions (30 septembre 2026)
-
-Une capture du client initial avec transport simulé et données réelles confirme que la deuxième requête contenait `observations.compter_npm1` et les chiffres calculés : aucune perte de ce résultat dans l’état LangGraph. Les messages totalisaient 2315 caractères, dont des empreintes et filtres inutiles pour choisir la suite. Cette capture ne prouve pas l’absence de troncature pendant le premier essai réel rapporté par l’utilisateur, dont la trace réseau n’était pas disponible.
-
-L’objectif du prompt demande explicitement calcul **et** preuve, puis comparaison avant de terminer. Un bilan compact remplace les observations brutes ; les messages réellement envoyés et réponses Ollama sont conservés dans `model_exchanges` en sortie `--json`, avec les compteurs de tokens retournés par le serveur. Les outils restent tous sélectionnables : le bilan indique leur utilité sans exécuter automatiquement la suite.
-
-Un appel identique réussi est réutilisé sans réexécution et marqué `reused`. Le bilan rappelle alors de choisir une autre action utile. À la deuxième répétition d’un appel réussi, Python arrête explicitement avec `NON_VERIFIE`. Les répétitions comptent dans les six décisions ; les échecs ne sont pas enregistrés comme réussites. Le changement d’un résultat de calcul ou de preuve invalide une comparaison antérieure, qui doit être redemandée par le modèle. Les données et filtres scientifiques sont inchangés.
-
-Les nouveaux tests simulés inspectent les messages sérialisés après le premier outil, l’absence d’empreintes/listes dans le contexte, la conservation de l’audit complet, la réutilisation sans recalcul, l’arrêt sur répétition persistante et la reprise après une répétition.
-
-Un **seul essai réel nominal** a été exécuté après cette correction avec `qwen3:0.6b` et la question par défaut. Séquence effectivement choisie : `compter_npm1 → compter_npm1 (réutilisé) → compter_npm1 (réutilisé, arrêt)`. Résultat : **NON_VERIFIE**, comparaison non appelée, durée **146,313 s**, maximum RSS Python **307,18 Mio** (serveur Ollama exclu). Le modèle continue à répéter malgré le bilan et le rappel ; cette limitation de planification est conservée explicitement, sans second essai ni choix automatique de la preuve.
-
-L’[audit nominal](notes/qwen3_nominal_2026-09-30.json) contient les trois requêtes/réponses réelles. Le deuxième message contient le choix précédent, ses effectifs, la preuve manquante et `preuve_pdf` parmi les outils utiles. Les compteurs d’entrée Ollama sont **548, 651, 668 tokens** pour un contexte de 2048 ; aucune indication de troncature sur cet essai. Les sorties sont du JSON valide, terminées par `stop`. Les **16 tests** passent, dont les régressions simulées ; ils ne constituent pas une réussite de planification réelle du modèle.
-
-## Mode diagnostic
+Example invocation:
 
 ```bash
-.venv/bin/python laml_poc.py --mode agentique --model qwen3:0.6b --diagnostic notes/agent_diagnostic.json --json > notes/agent_diagnostic_run.json
+python laml_poc.py \
+"Dans la cohorte TCGA-LAML de l’article NEJM 2013, combien de patients présentent une mutation NPM1 et quelle est la fréquence ?"
 ```
 
-`--diagnostic` seul écrit dans `notes/agent_diagnostic.json` ; un chemin explicite est aussi accepté. Ce fichier JSON est actualisé de manière atomique avant chaque envoi, après réception, puis après validation Python. Chaque décision conserve `request.messages`, le corps exact envoyé (`request_body`), `json_schema`, la réponse HTTP brute (`raw_response`), le contenu brut du modèle (`raw_model_content`), la réponse décodée, `validated_decision` et une éventuelle `validation_error`. Les compteurs retournés par Ollama sont comparés à `num_ctx` dans `context_check` : ce contrôle n’est pas une tokenisation indépendante avant envoi. Aucun outil n’est retiré du schéma et aucun prochain appel n’est forcé. Le diagnostic ne change pas les messages, options ni règles de vérification. Il nécessite le mode agentique.
+---
 
-Le [diagnostic court](notes/agent_diagnostic.md) distingue les défauts démontrés de l’échec de planification du modèle.
+## Tests
+
+The repository includes tests for the deterministic workflow and agentic components:
+
+```bash
+pytest
+```
+
+The scientific tools can therefore be tested independently from the behaviour of the local language model.
+
+---
+
+## Current limitations
+
+This is intentionally a **minimal proof of concept**, not a production biomedical agent.
+
+### Scientific scope
+
+The current workflow evaluates one question:
+
+```text
+TCGA-LAML
+    +
+NPM1 mutation frequency
+    +
+2013 TCGA AML publication
+```
+
+Generalization to other genes, cancers or publications has not yet been demonstrated.
+
+### Data processing
+
+The analysis uses author-provided TCGA annotations.
+
+It does not reprocess sequencing reads or reproduce the complete original variant-calling pipeline.
+
+### Agentic capability
+
+The model operates within a constrained action space.
+
+The reduced-guidance experiment demonstrates successful tool selection in one observed configuration, not open-ended autonomous scientific reasoning.
+
+### Model benchmarking
+
+The current comparison between Qwen3 0.6B and 1.7B is exploratory.
+
+A rigorous benchmark would require:
+
+- repeated runs;
+- multiple biomedical questions;
+- controlled prompt variants;
+- additional models;
+- success-rate measurements;
+- latency measurements;
+- memory measurements;
+- systematic failure classification.
+
+### Hardware
+
+The project was intentionally developed on constrained local hardware.
+
+In the recorded Qwen3 1.7B experiment, four model decisions required approximately:
+
+```text
+357 seconds
+```
+
+The deterministic Python component had a comparatively small memory footprint.
+
+Local LLM inference is therefore the main computational bottleneck in the current setup.
+
+---
+
+## What this POC demonstrates
+
+The project explores a simple design principle:
+
+> **A biomedical agent does not need to be trusted with the scientific answer in order to participate meaningfully in scientific reasoning.**
+
+A local LLM can act as a decision layer while deterministic tools retain responsibility for:
+
+- computation;
+- evidence;
+- verification;
+- provenance.
+
+The resulting workflow is designed to remain:
+
+**local · inspectable · reproducible · provenance-aware · scientifically auditable**
+
+---
+
+## Next steps
+
+Possible extensions include:
+
+- systematic agentic ablation experiments;
+- model-size benchmarking;
+- multiple genes and cancer cohorts;
+- retrieval-augmented scientific evidence;
+- biomedical knowledge graphs;
+- additional bioinformatics tools;
+- controlled multi-agent specialization;
+- contradictory-evidence handling;
+- failure recovery;
+- evaluation of robustness and explainability.
+
+These extensions are deliberately outside the current minimal POC.
+
+---
+
+## Status
+
+**Experimental proof of concept**
+
+Current validated use case:
+
+```text
+TCGA-LAML / NPM1
+
+54 / 200 = 27%
+
+VERIFIE
+```
